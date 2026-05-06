@@ -1,28 +1,21 @@
 ---
-- name: Verificación de Servicios Críticos en Linux
+- name: Asegurar que los servicios críticos estén encendidos (Auto-healing)
   hosts: all
-  become: yes  # Necesario para gestionar servicios (systemd)
-
+  become: yes
   vars:
-    # Lista de servicios que queremos monitorear
-    servicios_a_validar:
+    servicios_criticos:
       - sshd
-      - httpd  # Cambia a 'apache2' si usas Ubuntu/Debian
+      - httpd
 
   tasks:
-    - name: Comprobar el estado de los servicios
-      ansible.builtin.service_facts:
 
-    - name: Reportar estado de servicios encontrados
-      ansible.builtin.debug:
-        msg: "El servicio {{ item }} está {{ ansible_facts.services[item + '.service'].state | default('NO INSTALADO') }}"
-      loop: "{{ servicios_a_validar }}"
+    - name: Obtener información de servicios disponibles
+      service_facts:
 
-    - name: Asegurar que los servicios críticos estén encendidos (Auto-healing)
-      ansible.builtin.service:
+    - name: Asegurar que los servicios existentes estén iniciados
+      service:
         name: "{{ item }}"
         state: started
         enabled: yes
-      loop: "{{ servicios_a_validar }}"
-      register: service_result
-      # Esto marcará como "changed" solo si el servicio estaba apagado y tuvo que encenderse
+      loop: "{{ servicios_criticos }}"
+      when: "'{{ item }}.service' in ansible_facts.services"
