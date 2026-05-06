@@ -1,0 +1,31 @@
+---
+- name: Diagnóstico de Almacenamiento Linux
+  hosts: all
+  gather_facts: yes  # Necesario para obtener 'ansible_mounts'
+
+  tasks:
+    - name: Evaluar uso de cada partición
+      ansible.builtin.set_fact:
+        # Calculamos el porcentaje de uso: (Total - Disponible) / Total * 100
+        uso_disco: "{{ ((item.size_total - item.size_available) / item.size_total * 100) | round(1) }}"
+      loop: "{{ ansible_mounts }}"
+      loop_control:
+        label: "{{ item.mount }}"
+      register: resultados_disco
+
+    - name: Mostrar reporte de espacio
+      ansible.builtin.debug:
+        msg: "El disco {{ item.item.mount }} está al {{ ((item.item.size_total - item.item.size_available) / item.item.size_total * 100) | round(1) }}% de uso."
+      loop: "{{ resultados_disco.results }}"
+
+    - name: Validar umbral crítico (80%)
+      ansible.builtin.assert:
+        that:
+          - "((item.size_total - item.size_available) / item.size_total) < 0.80"
+        fail_msg: "¡ALERTA! El montaje {{ item.mount }} superó el 80% de uso."
+        success_msg: "El montaje {{ item.mount }} tiene espacio suficiente."
+      loop: "{{ ansible_mounts }}"
+      loop_control:
+        label: "{{ item.mount }}"
+
+

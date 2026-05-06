@@ -1,0 +1,32 @@
+---
+- name: Mantenimiento y Actualización de Sistema Operativo
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: Actualizar sistemas basados en Red Hat (RHEL, CentOS, Fedora)
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
+
+    - name: Actualizar sistemas basados en Debian (Ubuntu, Debian)
+      ansible.builtin.apt:
+        upgrade: dist
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Verificar si se requiere un reinicio
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+
+    - name: Reiniciar el servidor (solo si es necesario)
+      ansible.builtin.reboot:
+        msg: "Reinicio provocado por actualización de Kernel mediante Ansible"
+        connect_timeout: 5
+        reboot_timeout: 300
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+      when: reboot_required_file.stat.exists

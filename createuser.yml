@@ -1,0 +1,36 @@
+---
+- name: Configurar usuario dedicado para Ansible
+  hosts: all
+  become: yes  # Necesitas ser root para crear usuarios
+
+  vars:
+    usuario_nombre: "ansible"
+    # Nota: En producción, usa 'ansible.builtin.password_hash' para seguridad
+    usuario_password: "$6$mysecretsalt$9V.G.YF3k6.Xz1k8mR/Q6D7P9p8L/6O7O8Q9R0S1T2U3V4W5X6Y7Z8/."
+
+  tasks:
+    - name: Crear el grupo de ansible
+      ansible.builtin.group:
+        name: "{{ usuario_nombre }}"
+        state: present
+
+    - name: Crear el usuario 'ansible'
+      ansible.builtin.user:
+        name: "{{ usuario_nombre }}"
+        group: "{{ usuario_nombre }}"
+        shell: /bin/bash
+        comment: "Usuario para Automation Platform"
+        state: present
+
+    - name: Configurar Sudoers para acceso sin contraseña
+      ansible.builtin.copy:
+        content: "{{ usuario_nombre }} ALL=(ALL) NOPASSWD:ALL"
+        dest: "/etc/sudoers.d/{{ usuario_nombre }}"
+        mode: '0440'
+        validate: '/usr/sbin/visudo -cf %s'
+
+    - name: (Opcional) Añadir llave pública SSH
+      ansible.posix.authorized_key:
+        user: "{{ usuario_nombre }}"
+        state: present
+        key: "ssh-rsa AAAAB3Nza... tu_llave_publica_aqui"
