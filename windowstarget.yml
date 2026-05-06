@@ -1,0 +1,248 @@
+---
+- name: Gestión y Monitoreo de Servidores Windows
+  hosts: windows
+  gather_facts: yes
+  
+  vars:
+    new_username: ansible
+    new_user_password: "P@ssw0rd2026!"  # Cambia esto por una contraseña segura
+    new_user_fullname: "Ansible Automation User"
+    new_user_description: "Usuario creado por Ansible para automatización"
+    
+  tasks:
+    # ===== VERIFICACIÓN DE USO DE CPU =====
+    - name: Obtener información del procesador
+      ansible.windows.win_shell: |
+        Get-WmiObject Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed
+      register: cpu_info
+      changed_when: false
+
+    - name: Obtener uso actual de CPU
+      ansible.windows.win_shell: |
+        $cpu = Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 5
+        $avgCPU = ($cpu.CounterSamples | Measure-Object -Property CookedValue -Average).Average
+        [PSCustomObject]@{
+            'CPU_Promedio' = [math]::Round($avgCPU, 2)
+            'Muestras' = $cpu.CounterSamples.Count
+            'Timestamp' = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        } | ConvertTo-Json
+      register: cpu_usage
+      changed_when: false
+
+    - name: Obtener procesos con mayor consumo de CPU
+      ansible.windows.win_shell: |
+        Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 Name, CPU, WorkingSet, Id | 
+        Format-Table -AutoSize | Out-String
+      register: top_cpu_processes
+      changed_when: false
+
+    - name: Mostrar información de CPU
+      ansible.builtin.debug:
+        msg:
+          - "=================================================="
+          - "         INFORMACIÓN DEL PROCESADOR"
+          - "=================================================="
+          - "{{ cpu_info.stdout }}"
+          - "=================================================="
+          - "         USO ACTUAL DE CPU"
+          - "=================================================="
+          - "{{ (cpu_usage.stdout | from_json) }}"
+          - "=================================================="
+
+    - name: Mostrar top 10 procesos por CPU
+      ansible.builtin.debug:
+        msg:
+          - "=================================================="
+          - "    TOP 10 PROCESOS POR USO DE CPU"
+          - "=================================================="
+          - "{{ top_cpu_processes.stdout_lines }}"
+
+    # ===== VERIFICACIÓN DE SERVICIOS DE WINDOWS =====
+    - name: Obtener servicios en ejecución
+      ansible.windows.win_service_info:
+      register: all_services
+
+    - name: Filtrar servicios importantes
+      ansible.builtin.set_fact:
+        running_services: "{{ all_services.services | selectattr('state', 'equalto', 'running') | list }}"
+        stopped_services: "{{ all_services.services | selectattr('state', 'equalto', 'stopped') | selectattr('start_mode', 'equalto', 'auto') | list }}"
+
+    - name: Verificar servicios críticos específicos
+      ansible.windows.win_service_info:
+        name: "{{ item }}"
+      loop:
+        - W32Time          # Servicio de tiempo de Windows
+        - Winmgmt          # Windows Management Instrumentation
+        - WinRM            # Windows Remote Management
+        - EventLog         # Registro de eventos de Windows
+        - Dhcp             # Cliente DHCP (si aplica)
+        - Dnscache         # Cliente DNS
+        - LanmanServer     # Servidor (compartición de archivos)
+        - LanmanWorkstation # Estación de trabajo
+      register: critical_services
+      ignore_errors: yes
+
+    - name: Mostrar resumen de servicios
+      ansible.builtin.debug:
+        msg:
+          - "=================================================="
+          - "         RESUMEN DE SERVICIOS DE WINDOWS"
+          - "=================================================="
+          - "Total de servicios: {{ all_services.services | length }}"
+          - "Servicios en ejecución: {{ running_services | length }}"
+          - "Servicios automáticos detenidos: {{ stopped_services | length }}"
+          - "=================================================="
+
+    - name: Mostrar estado de servicios críticos
+      ansible.builtin.debug:
+        msg:
+          - "=================================================="
+          - "      ESTADO DE SERVICIOS CRÍTICOS"
+          - "=================================================="
+          - "{% for result in critical_services.results %}{% if result.services is defined %}Servicio: {{ result.services[0].name | default('N/A') }} - Estado: {{ result.services[0].state | default('N/A') }} - Inicio: {{ result.services[0].start_mode | default('N/A') }}{% endif %}{% endfor %}"
+          - "=================================================="
+
+    - name: Obtener servicios automáticos que están detenidos
+      ansible.builtin.debug:
+        msg:
+          - "=================================================="
+          - "  SERVICIOS AUTOMÁTICOS DETENIDOS (ALERTAS)"
+          - "=================================================="
+          - "{% for service in stopped_services[:10] %}{{ service.name }} - {{ service.display_name }}{% endfor %}"
+          - "{% if stopped_services | length > 10 %}... y {{ stopped_services | length - 10 }} más{% endif %}"
+          - "=================================================="
+
+    - name: Exportar lista completa de servicios a archivo
+      ansible.windows.win_shell: |
+        Get-Service | Select-Object Name, DisplayName, Status, StartType | 
+        Sort-Object Status, Name | 
+        ConvertTo-Json | 
+        Out-File -FilePath C:\Temp\services_report.json -Encoding UTF8
+      args:
+        creates: C:\Temp
+
+    # ===== CREACIÓN DEL USUARIO ANSIBLE =====
+    - name: Verificar si el usuario ansible ya existe
+      ansible.windows.win_user:
+        name: "{{ new_username }}"
+        state: query
+      register: user_exists
+      ignore_errors: yes
+
+    - name: Crear usuario ansible
+      ansible.windows.win_user:
+        name: "{{ new_username }}"
+        password: "{{ new_user_password }}"
+        fullname: "{{ new_user_fullname }}"
+        description: "{{ new_user_description }}"
+        state: present
+        account_disabled: no
+        account_locked: no
+        password_expired: no
+        password_never_expires: yes
+        user_cannot_change_password: no
+        groups:
+          - Administradores  # Si tu Windows está en español
+          - Administrators    # Si tu Windows está en inglés
+        groups_action: add
+      register: user_creation
+      when: user_exists is failed
+
+    - name: Actualizar usuario ansible si ya existe
+      ansible.windows.win_user:
+        name: "{{ new_username }}"
+        password: "{{ new_user_password }}"
+        fullname: "{{ new_user_fullname }}"
+        description: "{{ new_user_description }}"
+        state: present
+        update_password: always
+      register: user_update
+      when: user_exists is succeeded
+
+    - name: Agregar usuario ansible al grupo de administradores
+      ansible.windows.win_group_membership:
+        name: Administrators
+        members:
+          - "{{ new_username }}"
+        state: present
+      register: group_membership
+      ignore_errors: yes
+
+    - name: Agregar usuario ansible al grupo Remote Desktop Users
+      ansible.windows.win_group_membership:
+        name: "Remote Desktop Users"
+        members:
+          - "{{ new_username }}"
+        state: present
+      ignore_errors: yes
+
+    - name: Verificar la creación del usuario
+      ansible.windows.win_shell: |
+        $user = Get-LocalUser -Name "{{ new_username }}"
+        $groups = Get-LocalGroup | Where-Object { (Get-LocalGroupMember -Group $_.Name -Member "{{ new_username }}" -ErrorAction SilentlyContinue) }
+        [PSCustomObject]@{
+            'Usuario' = $user.Name
+            'NombreCompleto' = $user.FullName
+            'Habilitado' = $user.Enabled
+            'UltimoAcceso' = $user.LastLogon
+            'Grupos' = ($groups.Name -join ', ')
+        } | ConvertTo-Json
+      register: user_verification
+      changed_when: false
+
+    - name: Mostrar resultado de la creación del usuario
+      ansible.builtin.debug:
+        msg:
+          - "=================================================="
+          - "         CREACIÓN DE USUARIO ANSIBLE"
+          - "=================================================="
+          - "{% if user_creation.changed %}✓ Usuario '{{ new_username }}' creado exitosamente{% elif user_update.changed %}✓ Usuario '{{ new_username }}' actualizado exitosamente{% else %}ℹ Usuario '{{ new_username }}' ya existía (sin cambios){% endif %}"
+          - "{{ (user_verification.stdout | from_json) }}"
+          - "=================================================="
+
+    # ===== INFORMACIÓN ADICIONAL DEL SISTEMA =====
+    - name: Obtener información general del sistema
+      ansible.windows.win_shell: |
+        [PSCustomObject]@{
+            'Hostname' = $env:COMPUTERNAME
+            'SO' = (Get-WmiObject Win32_OperatingSystem).Caption
+            'Version' = (Get-WmiObject Win32_OperatingSystem).Version
+            'Arquitectura' = (Get-WmiObject Win32_OperatingSystem).OSArchitecture
+            'UltimoReinicio' = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString("yyyy-MM-dd HH:mm:ss")
+            'MemoriaTotal_GB' = [math]::Round((Get-WmiObject Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
+            'MemoriaLibre_GB' = [math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory / 1MB, 2)
+        } | ConvertTo-Json
+      register: system_info
+      changed_when: false
+
+    # ===== REPORTE FINAL =====
+    - name: Generar reporte final
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "╔═══════════════════════════════════════════════════╗"
+          - "║     REPORTE FINAL - GESTIÓN WINDOWS               ║"
+          - "╚═══════════════════════════════════════════════════╝"
+          - ""
+          - "📊 INFORMACIÓN DEL SISTEMA:"
+          - "{{ (system_info.stdout | from_json) }}"
+          - ""
+          - "💻 CPU:"
+          - "   Uso promedio: {{ (cpu_usage.stdout | from_json).CPU_Promedio }}%"
+          - "   {% if (cpu_usage.stdout | from_json).CPU_Promedio | float > 80 %}⚠️  ALERTA: Uso alto de CPU{% elif (cpu_usage.stdout | from_json).CPU_Promedio | float > 50 %}⚡ Uso moderado{% else %}✓ Uso normal{% endif %}"
+          - ""
+          - "🔧 SERVICIOS:"
+          - "   Total: {{ all_services.services | length }}"
+          - "   En ejecución: {{ running_services | length }}"
+          - "   Detenidos (auto): {{ stopped_services | length }}"
+          - "   {% if stopped_services | length > 0 %}⚠️  Revisar servicios detenidos{% else %}✓ Todos los servicios automáticos están en ejecución{% endif %}"
+          - ""
+          - "👤 USUARIO ANSIBLE:"
+          - "   Usuario: {{ new_username }}"
+          - "   Estado: {% if user_creation.changed %}✓ Creado{% elif user_update.changed %}✓ Actualizado{% else %}✓ Existente{% endif %}"
+          - "   Grupos: {{ (user_verification.stdout | from_json).Grupos }}"
+          - ""
+          - "╚═══════════════════════════════════════════════════╝"
+          - "Reporte generado: {{ ansible_date_time.iso8601 }}"
+          - "════════════════════════════════════════════════════"
+ 
